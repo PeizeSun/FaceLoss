@@ -289,8 +289,8 @@ def main():
             save_model(model, 'runs/iter_{}.pth'.format(epoch))
 
     gif_name = {
-        'train': 'train_features.gif',
-        'test' : 'test_features.gif'
+        'train': 'features_train.gif',
+        'test' : 'features_test.gif'
     }
 
     filepath = {'train': 'train/',
