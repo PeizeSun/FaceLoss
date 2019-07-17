@@ -233,3 +233,4 @@ def SphereFace20(**kwargs):
     model = SphereFace(BasicBlock, cfg['C'], **kwargs)
 
     return model
+
