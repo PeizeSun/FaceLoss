@@ -9,8 +9,9 @@ from torchvision import datasets, transforms, utils
 import numpy as np
 from tensorboardX import SummaryWriter
 
-from model import SphereFace20, AngularSoftmaxWithLoss
 from utils import visual_feature_space, create_gif
+from sphereface_model import SphereFace20, AngularSoftmaxWithLoss
+from cosface_model import CosSphereFace20, MarginCosineSoftmaxWithLoss
 
 
 class Options():
@@ -52,7 +53,7 @@ class Options():
                                  help='path of data for save log.')
         self.parser.add_argument('--epochs',
                                  type=int,
-                                 default=10,
+                                 default=9,
                                  metavar='N',
                                  help='number of epochs to train (default: 20)')
         self.parser.add_argument('--num-classes',
@@ -176,6 +177,7 @@ def train(args, model, data_loader, optimizer, epoch, criterion, writer, iter_co
         batch_time.update(time.time() - end)
         end = time.time()
 
+        # features = features.renorm(2, 0, 1e-5).mul(1e5)
         embeddings.append(features.cpu().data.numpy())
         nlabels.append(target.cpu().data.numpy())
 
@@ -216,6 +218,7 @@ def test(args, model, data_loader, epoch, criterion, writer, iter_count):
             features, outputs = model(data)
             loss = criterion(outputs, target)
 
+            # features = features.renorm(2, 0, 1e-5).mul(1e5)
             embeddings.append(features.cpu().data.numpy())
             nlabels.append(target.cpu().data.numpy())
 
@@ -272,16 +275,20 @@ def main():
         'train': train_loader,
         'test': test_loader
     }
-    model = SphereFace20(m=1).cuda()
+
+    # model = SphereFace20().cuda()
+    # criterion = AngularSoftmaxWithLoss().cuda()
+    
+    model = CosSphereFace20().cuda()
+    criterion = MarginCosineSoftmaxWithLoss().cuda()
+
     optimizer = optim.SGD(model.parameters(),
                           lr=args.lr,
                           momentum=args.momentum,
                           weight_decay=args.weight_decay,
                           nesterov=True)
-    criterion = AngularSoftmaxWithLoss()
+
     with SummaryWriter(args.log_dir) as writer:
-        input_data = torch.rand(32, 1, 28, 28).cuda()
-        writer.add_graph(model, (input_data, ))
         for epoch in range(1, args.epochs + 1):
             adjust_learning_rate(args, optimizer, epoch - 1)
             iter_count = len(train_loader) * (epoch - 1)
