@@ -1,4 +1,5 @@
 # -*- coding:utf-8 -*-
+import math
 
 import torch
 import torch.nn as nn
@@ -57,7 +58,7 @@ class CosineLayer(nn.Module):
         self.in_planes = in_planes
         self.out_planes = out_planes
         self.weight = Parameter(torch.Tensor(in_planes, out_planes))
-        self.weight.data.uniform_(-1, 1).renorm_(2, 1, 1e-5).mul_(1e5)
+        nn.init.xavier_uniform_(self.weight)
 
     def forward(self, _input):
         '''
@@ -67,7 +68,7 @@ class CosineLayer(nn.Module):
         x = _input                                          # (B, F)
         w = self.weight                                     # (F, C)
         xlen = x.pow(2).sum(1).pow(0.5)                     # (B)
-        wlen = w.pow(2).sum(0).pow(0.5)                     # (C)
+        wlen = w.pow(2).sum(0).pow(0.5)                    # (C)
 
         inner_wx = x.mm(w)  # (B, C)
         cos_theta = inner_wx / xlen.view(-1, 1) / wlen.view(1, -1)  # (B, C)
@@ -77,21 +78,38 @@ class CosineLayer(nn.Module):
         return output
 
 
-class MarginCosineSoftmaxWithLoss(nn.Module):
-    def __init__(self, s=10.0, m=0.20, gamma=0):
-        super(MarginCosineSoftmaxWithLoss, self).__init__()
+class ArcMarginSoftmaxWithLoss(nn.Module):
+    def __init__(self, s=30.0, m=0.50, easy_margin=False, gamma=0):
+        super(ArcMarginSoftmaxWithLoss, self).__init__()
         self.gamma = gamma
         self.s = s
         self.m = m
+        self.easy_margin = easy_margin
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.th = math.cos(math.pi - m)
+        self.mm = math.sin(math.pi - m) * m
 
     def forward(self, _input, target):
         cos_theta, _ = _input               # (B, C)
-        target = target.view(-1, 1)         # (B, 1)
 
+        # cos(a+b)=cos(a)*cos(b)-size(a)*sin(b)
+        # from IPython import embed; embed()
+
+        sin_theta = torch.sqrt((1.0 - torch.pow(cos_theta, 2)).clamp(0, 1))
+        phi_theta = cos_theta * self.cos_m - sin_theta * self.sin_m
+
+        if self.easy_margin:
+            phi_theta = torch.where(cos_theta > 0, phi_theta, cos_theta)
+        else:
+            phi_theta = torch.where(cos_theta > self.th, phi_theta, cos_theta - self.mm)
+
+        target = target.view(-1, 1)                     # (B, 1)
         index = cos_theta.data * 0.0
         index.scatter_(1, target.data.view(-1, 1), 1)   # (B, C)
 
-        output = self.s * (cos_theta - index * self.m)
+        output = index * phi_theta + (1 - index) * cos_theta
+        output = self.s * output
         logit = F.log_softmax(output)
         logit = logit.gather(1, target).view(-1)
 
@@ -103,7 +121,7 @@ class MarginCosineSoftmaxWithLoss(nn.Module):
 
 
 class SphereFace(nn.Module):
-    def __init__(self, block, layers, num_classes=10, feat_dim=2):
+    def __init__(self, block, layers, num_classes=10, feat_dim=4):
         '''
 
         :param block: residual units
@@ -182,7 +200,7 @@ class SphereFace(nn.Module):
         return x, y
 
 
-def CosSphereFace4(**kwargs):
+def ArcSphereFace4(**kwargs):
     '''
     Constructs a SphereFace4 model
     :param kwargs:
@@ -193,7 +211,7 @@ def CosSphereFace4(**kwargs):
     return model
 
 
-def CosSphereFace20(**kwargs):
+def ArcSphereFace20(**kwargs):
     '''
     Constructs a SphereFace4 model
     :param kwargs:

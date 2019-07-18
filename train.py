@@ -9,9 +9,10 @@ from torchvision import datasets, transforms, utils
 import numpy as np
 from tensorboardX import SummaryWriter
 
-from utils import visual_feature_space, create_gif
-from sphereface_model import SphereFace20, AngularSoftmaxWithLoss
-from cosface_model import CosSphereFace20, MarginCosineSoftmaxWithLoss
+from utils import visual_feature_space, create_gif, visual_feature_space_record
+from sphereface_model import SphereFace20, SphereFace4, AngularSoftmaxWithLoss
+from cosface_model import CosSphereFace20, CosSphereFace4, MarginCosineSoftmaxWithLoss
+from arcface_model import ArcSphereFace20, ArcSphereFace4, ArcMarginSoftmaxWithLoss
 
 
 class Options():
@@ -35,7 +36,7 @@ class Options():
                                  help='how many batches to wait before logging training status')
         self.parser.add_argument('--lr',
                                  type=float,
-                                 default=1e-2,
+                                 default=2e-3,
                                  metavar='LR',
                                  help='learning rate (default: 1e-3)')
         self.parser.add_argument('--momentum',
@@ -148,7 +149,7 @@ def load_data(args):
     return train_loader, test_loader
 
 
-def train(args, model, data_loader, optimizer, epoch, criterion, writer, iter_count):
+def train(args, model, data_loader, optimizer, epoch, criterion, writer, iter_count, vis_record):
     """"""
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -198,11 +199,12 @@ def train(args, model, data_loader, optimizer, epoch, criterion, writer, iter_co
         iter_count += 1
     embeddings = np.concatenate(embeddings, 0)
     nlabels = np.concatenate(nlabels, 0)
-    visual_feature_space(embeddings, nlabels, args.num_classes, epoch, top1.avg, 'train/')
-    test(args, model, data_loader['test'], epoch, criterion, writer, iter_count)
+    vis_record['train_{}'.format(epoch)] = [embeddings, nlabels, args.num_classes, epoch, top1.avg]
+    # visual_feature_space(embeddings, nlabels, args.num_classes, epoch, top1.avg, 'train/')
+    test(args, model, data_loader['test'], epoch, criterion, writer, iter_count, vis_record)
 
 
-def test(args, model, data_loader, epoch, criterion, writer, iter_count):
+def test(args, model, data_loader, epoch, criterion, writer, iter_count, vis_record):
     """"""
     model.eval()
     losses = AverageMeter()
@@ -236,13 +238,13 @@ def test(args, model, data_loader, epoch, criterion, writer, iter_count):
 
             CM += confusion_matrix(target, pred, args.num_classes)
 
-        print('\nConfusion matrix :')
-        print(CM)
-        print('Precision:')
-        print(CM / CM.sum(dim=0))
-        print('Recall:')
+        # print('\nConfusion matrix :')
+        # print(CM)
+        # print('Precision:')
+        # print(CM / CM.sum(dim=0))
+        # print('Recall:')
         recall = CM.t() / CM.sum(dim=1)
-        print(recall.t())
+        # print(recall.t())
 
         print('Validate: [{0}/{1}]\t'
               'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -257,7 +259,8 @@ def test(args, model, data_loader, epoch, criterion, writer, iter_count):
 
         embeddings = np.concatenate(embeddings, 0)
         nlabels = np.concatenate(nlabels, 0)
-        visual_feature_space(embeddings, nlabels, args.num_classes, epoch, top1.avg, 'test/')
+        # visual_feature_space(embeddings, nlabels, args.num_classes, epoch, top1.avg, 'test/')
+        vis_record['test_{}'.format(epoch)] = [embeddings, nlabels, args.num_classes, epoch, top1.avg]
 
 
 def save_model(model, filename):
@@ -276,30 +279,41 @@ def main():
         'test': test_loader
     }
 
-    # model = SphereFace20().cuda()
-    # criterion = AngularSoftmaxWithLoss().cuda()
-    
-    model = CosSphereFace20().cuda()
-    criterion = MarginCosineSoftmaxWithLoss().cuda()
+    model = SphereFace4(m=4).cuda()
+    criterion = AngularSoftmaxWithLoss().cuda()
+    gif_name = {
+        'train': 'sphereface_train.gif',
+        'test' : 'sphereface_test.gif'
+    }
 
+    # model = CosSphereFace4().cuda()
+    # criterion = MarginCosineSoftmaxWithLoss().cuda()
+    # gif_name = {
+    #     'train': 'cosface_train.gif',
+    #     'test': 'cosface_test.gif'
+    # }
+
+    # model = ArcSphereFace4().cuda()
+    # criterion = ArcMarginSoftmaxWithLoss().cuda()
+    # gif_name = {
+    #     'train': 'arcface_train.gif',
+    #     'test': 'arcface_test.gif'
+    # }
+    
     optimizer = optim.SGD(model.parameters(),
                           lr=args.lr,
                           momentum=args.momentum,
                           weight_decay=args.weight_decay,
                           nesterov=True)
-
+    vis_record = dict()
     with SummaryWriter(args.log_dir) as writer:
         for epoch in range(1, args.epochs + 1):
             adjust_learning_rate(args, optimizer, epoch - 1)
             iter_count = len(train_loader) * (epoch - 1)
-            train(args, model, data_loader, optimizer, epoch, criterion, writer, iter_count)
+            train(args, model, data_loader, optimizer, epoch, criterion, writer, iter_count, vis_record)
             save_model(model, 'runs/iter_{}.pth'.format(epoch))
 
-    gif_name = {
-        'train': 'features_train.gif',
-        'test' : 'features_test.gif'
-    }
-
+    visual_feature_space_record(vis_record)
     filepath = {'train': 'train/',
                 'test': 'test/'}
 

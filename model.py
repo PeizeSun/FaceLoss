@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Parameter
 
+__all__ = ['SphereFace4', 'SphereFace20',]
+
 cfg = {
     'A': [0, 0, 0, 0],
     'C': [1, 2, 4, 1],
@@ -51,13 +53,23 @@ class BasicBlock(nn.Module):
         return out
 
 
-class CosineLayer(nn.Module):
-    def __init__(self, in_planes, out_planes):
-        super(CosineLayer, self).__init__()
+class AngleLayer(nn.Module):
+    def __init__(self, in_planes, out_planes, m=4):
+        super(AngleLayer, self).__init__()
         self.in_planes = in_planes
         self.out_planes = out_planes
         self.weight = Parameter(torch.Tensor(in_planes, out_planes))
         self.weight.data.uniform_(-1, 1).renorm_(2, 1, 1e-5).mul_(1e5)
+        self.m = m
+        # cos(m*theta) = f(cos(theta))
+        self.cos_val = [
+            lambda x: x**0,  # cos(0*theta)=1
+            lambda x: x**1,  # cos(1*theta)=cos(theta)
+            lambda x: 2*x**2 - 1,  # cos(2*theta)=2*cos(theta)**2-1
+            lambda x: 4*x**3 - 3*x,
+            lambda x: 8*x**4 - 8*x**2+1,
+            lambda x: 16*x**5 - 20*x**3 + 5*x
+        ]
 
     def forward(self, _input):
         '''
@@ -66,32 +78,51 @@ class CosineLayer(nn.Module):
         '''
         x = _input                                          # (B, F)
         w = self.weight                                     # (F, C)
+        ww = w.renorm(2, 1, 1e-5).mul(1e5)                  # L2-norm to first-dim(column)
         xlen = x.pow(2).sum(1).pow(0.5)                     # (B)
-        wlen = w.pow(2).sum(0).pow(0.5)                     # (C)
+        wlen = ww.pow(2).sum(0).pow(0.5)                    # (C)
 
-        inner_wx = x.mm(w)  # (B, C)
+        inner_wx = x.mm(ww)  # (B, C)
         cos_theta = inner_wx / xlen.view(-1, 1) / wlen.view(1, -1)  # (B, C)
         cos_theta = cos_theta.clamp(-1, 1)  # (B, C)
 
-        output = (cos_theta, None)
+        cos_m_theta = self.cos_val[self.m](cos_theta)       # (B, C)
+        theta = cos_theta.data.acos()                       # (B, C)
+        k = (self.m * theta / 3.1415926).floor()            # (B, C)
+        minus_one = k*0.0 - 1
+        phi_theta = (minus_one ** k) * cos_m_theta - 2 * k  # (B, C)
+
+        x_cos_theta = cos_theta * xlen.view(-1, 1)
+        x_phi_theta = phi_theta * xlen.view(-1, 1)
+
+        output = (x_cos_theta, x_phi_theta)
         return output
 
 
-class MarginCosineSoftmaxWithLoss(nn.Module):
-    def __init__(self, s=10.0, m=0.20, gamma=0):
-        super(MarginCosineSoftmaxWithLoss, self).__init__()
+class AngularSoftmaxWithLoss(nn.Module):
+    def __init__(self, gamma=0):
+        super(AngularSoftmaxWithLoss, self).__init__()
         self.gamma = gamma
-        self.s = s
-        self.m = m
+        self.iter = 0
+        self.lambda_min = 5.0
+        self.lambda_max = 5000.0
+        self.lamb = 5000.0
 
     def forward(self, _input, target):
-        cos_theta, _ = _input               # (B, C)
+        self.iter += 1
+        x_cos_theta, x_phi_theta = _input    # (B, C)
         target = target.view(-1, 1)         # (B, 1)
 
-        index = cos_theta.data * 0.0
+        index = x_cos_theta.data * 0.0
         index.scatter_(1, target.data.view(-1, 1), 1)   # (B, C)
+        index = index.byte()
 
-        output = self.s * (cos_theta - index * self.m)
+        self.lamb = max(self.lambda_min, self.lambda_max / (1 + 0.1 * self.iter))
+
+        output = x_cos_theta * 1.0
+        output[index] -= x_cos_theta[index] * 1.0 / (1 + self.lamb)
+        output[index] += x_phi_theta[index] * 1.0 / (1 + self.lamb)
+
         logit = F.log_softmax(output)
         logit = logit.gather(1, target).view(-1)
 
@@ -103,7 +134,7 @@ class MarginCosineSoftmaxWithLoss(nn.Module):
 
 
 class SphereFace(nn.Module):
-    def __init__(self, block, layers, num_classes=10, feat_dim=2):
+    def __init__(self, block, layers, num_classes=10, feat_dim=2, m=4):
         '''
 
         :param block: residual units
@@ -134,7 +165,7 @@ class SphereFace(nn.Module):
         self.layer4 = self._make_layer(block, 512, nr_blocks=layers[3])
         self.fc5 = nn.Linear(512 * 2 * 2, 512)
         self.fc6 = nn.Linear(512, feat_dim)
-        self.fc7 = CosineLayer(feat_dim, num_classes)
+        self.fc7 = AngleLayer(feat_dim, num_classes, m)
 
     def _make_layer(self, block, planes, nr_blocks, stride=1):
         if nr_blocks != 0:
@@ -182,7 +213,7 @@ class SphereFace(nn.Module):
         return x, y
 
 
-def CosSphereFace4(**kwargs):
+def SphereFace4(**kwargs):
     '''
     Constructs a SphereFace4 model
     :param kwargs:
@@ -193,7 +224,7 @@ def CosSphereFace4(**kwargs):
     return model
 
 
-def CosSphereFace20(**kwargs):
+def SphereFace20(**kwargs):
     '''
     Constructs a SphereFace4 model
     :param kwargs:
